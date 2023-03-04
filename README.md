@@ -8,8 +8,7 @@ Since it uses the macos's airport utility. In only works under macos.
 
 # Usage
 - pip3 install requirements.txt
-- python3 wifi2go.py -i en0 -a
+- python3 wifi2go.py -i interface
 - -i is for your interface
-- -a is for auto mode
 
 #Educational Purposes Only
